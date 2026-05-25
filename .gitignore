@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Data
+data/raw/
+data/processed/
+data/splits/
+
+# Training artifacts
+runs/
+*.pt
+*.ckpt
+
+# Results: keep CSVs and figures, exclude any large binaries
+results/**/*.pt
+results/**/*.ckpt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local state
+.claude/

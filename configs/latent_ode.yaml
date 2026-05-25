@@ -1,0 +1,31 @@
+name: latent_ode
+model:
+  type: latent_ode
+  z_dim: 32                # bumped from 16: more capacity for 6 channels
+  enc_hidden: 64           # bumped from 32
+  ode_hidden: 64
+  ode_method: rk4          # fixed-step; the real divergence fix was tighter grad_clip + warmup
+  rtol: 1.0e-3
+  atol: 1.0e-4
+  use_adjoint: true
+
+data:
+  interval: hourly
+  history: 48
+  horizon: 24
+  stride: 6
+  batch_size: 64
+  num_workers: 0
+
+train:
+  epochs: 80
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 0.5           # tightened from 1.0 after epoch-48 blowup
+  early_stopping_patience: 10
+  scheduler_patience: 4
+  scheduler_factor: 0.5
+  amp: false
+  seed: 42
+  warmup_epochs: 5          # linear LR warmup from lr/10 to lr
+  input_dropout_train: 0.3  # random input dropout as data augmentation
