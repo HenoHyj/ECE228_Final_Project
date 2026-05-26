@@ -20,6 +20,34 @@ def denormalize(x: torch.Tensor, scaler: dict, channels: list[str]) -> torch.Ten
     return x * stds + means
 
 
+def persistence_forecast(
+    x_hist: torch.Tensor,
+    mask_hist: torch.Tensor,
+    horizon: int,
+) -> torch.Tensor:
+    """Naive baseline: repeat the LAST OBSERVED value of each channel.
+
+    Responds to input dropout (when the last obs is dropped, the repeated value
+    shifts to an earlier one), so it is an honest robustness floor. Returns
+    [B, horizon, D].
+    """
+    B, H, D = x_hist.shape
+    ar = torch.arange(H, device=x_hist.device, dtype=x_hist.dtype).view(1, H, 1).expand(B, H, D)
+    last_obs_idx = torch.where(mask_hist, ar, torch.full_like(ar, -1.0)).cummax(dim=1).values
+    li = last_obs_idx[:, -1, :].clamp(min=0).long()                # [B, D]
+    last_val = torch.gather(x_hist, 1, li.unsqueeze(1)).squeeze(1)  # [B, D]
+    return last_val.unsqueeze(1).expand(B, horizon, D).contiguous()
+
+
+def skill_score(model_mse: np.ndarray, ref_mse: np.ndarray) -> np.ndarray:
+    """MSE ratio vs a reference (e.g. persistence). <1 beats the reference.
+
+    Dimensionless, so averaging across channels is legitimate (unlike raw MSE
+    in mixed physical units).
+    """
+    return model_mse / np.maximum(ref_mse, 1e-12)
+
+
 def per_channel_errors(
     pred: torch.Tensor,
     target: torch.Tensor,

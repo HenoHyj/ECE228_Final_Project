@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data.dataset import ScrippsWindows, WindowConfig, collate  # noqa: E402
+from src.data.dataset import TFEAT_DIM, ScrippsWindows, WindowConfig, collate  # noqa: E402
 from src.models.latent_ode import LatentODE                          # noqa: E402
 from src.training.trainer import TrainCfg, Trainer                   # noqa: E402
 from src.utils.config import load_config                             # noqa: E402
@@ -45,6 +45,7 @@ def main() -> None:
         history=cfg["data"]["history"],
         horizon=cfg["data"]["horizon"],
         stride=cfg["data"]["stride"],
+        time_scale=cfg["data"].get("time_scale"),
     )
     parquet = ROOT / "data" / "processed" / f"{interval}.parquet"
     scaler  = ROOT / "data" / "processed" / "scaler.json"
@@ -68,11 +69,18 @@ def main() -> None:
         rtol=cfg["model"]["rtol"],
         atol=cfg["model"]["atol"],
         use_adjoint=cfg["model"]["use_adjoint"],
+        dec_hidden=cfg["model"].get("dec_hidden", 64),
+        use_tidal_features=cfg["model"].get("use_tidal_features", False),
+        tfeat_dim=TFEAT_DIM,
+        ode_gain=cfg["model"].get("ode_gain", 0.5),
+        ode_substeps=cfg["model"].get("ode_substeps", 1),
     )
     print(f"Params: {sum(p.numel() for p in model.parameters()):,}")
 
     def predict(batch):
-        return model(batch["x_hist"], batch["mask_hist"], batch["t_hist"], batch["t_fcst"])
+        return model(batch["x_hist"], batch["mask_hist"], batch["t_hist"], batch["t_fcst"],
+                     tfeat_hist=batch["tfeat_hist"], tfeat_fcst=batch["tfeat_fcst"],
+                     return_recon=True)
 
     train_cfg = TrainCfg(
         epochs=2 if args.smoke else cfg["train"]["epochs"],
@@ -85,6 +93,7 @@ def main() -> None:
         amp=cfg["train"]["amp"],
         warmup_epochs=cfg["train"].get("warmup_epochs", 0),
         input_dropout_train=cfg["train"].get("input_dropout_train", 0.0),
+        recon_weight=cfg["train"].get("recon_weight", 0.0),
     )
     trainer = Trainer(model, predict, train_cfg, device, ROOT / "runs" / name)
     result = trainer.fit(train_loader, val_loader)

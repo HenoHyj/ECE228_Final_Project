@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data.dataset import ScrippsWindows, WindowConfig, collate  # noqa: E402
+from src.data.dataset import TFEAT_DIM, ScrippsWindows, WindowConfig, collate  # noqa: E402
 from src.models.lstm_baseline import LSTMForecaster                  # noqa: E402
 from src.training.trainer import TrainCfg, Trainer                   # noqa: E402
 from src.utils.config import load_config                             # noqa: E402
@@ -39,6 +39,7 @@ def main() -> None:
         history=cfg["data"]["history"],
         horizon=cfg["data"]["horizon"],
         stride=cfg["data"]["stride"],
+        time_scale=cfg["data"].get("time_scale"),
     )
     parquet = ROOT / "data" / "processed" / f"{interval}.parquet"
     scaler  = ROOT / "data" / "processed" / "scaler.json"
@@ -59,11 +60,13 @@ def main() -> None:
         horizon=win_cfg.horizon,
         num_layers=cfg["model"]["num_layers"],
         dropout=cfg["model"]["dropout"],
+        use_tidal_features=cfg["model"].get("use_tidal_features", False),
+        tfeat_dim=TFEAT_DIM,
     )
     print(f"Params: {sum(p.numel() for p in model.parameters()):,}")
 
     def predict(batch):
-        return model(batch["x_hist"], batch["mask_hist"])
+        return model(batch["x_hist"], batch["mask_hist"], tfeat_hist=batch["tfeat_hist"])
 
     train_cfg = TrainCfg(
         epochs=2 if args.smoke else cfg["train"]["epochs"],

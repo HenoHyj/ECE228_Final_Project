@@ -1,0 +1,39 @@
+# Ablation: Latent ODE WITHOUT tidal clock features.
+# Quantifies how much the deterministic tide clock contributes vs. the learned
+# latent dynamics. Same as latent_ode.yaml but use_tidal_features: false.
+name: latent_ode_notidal
+model:
+  type: latent_ode
+  z_dim: 32
+  enc_hidden: 64
+  ode_hidden: 64
+  dec_hidden: 64
+  ode_method: rk4
+  ode_substeps: 2
+  ode_gain: 0.5
+  rtol: 1.0e-3
+  atol: 1.0e-4
+  use_adjoint: true
+  use_tidal_features: false
+
+data:
+  interval: hourly
+  history: 48
+  horizon: 24
+  stride: 6
+  batch_size: 64
+  num_workers: 0
+
+train:
+  epochs: 80
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 0.5
+  early_stopping_patience: 10
+  scheduler_patience: 4
+  scheduler_factor: 0.5
+  amp: false
+  seed: 42
+  warmup_epochs: 5
+  input_dropout_train: 0.3
+  recon_weight: 0.5

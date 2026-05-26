@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.data.dataset import ScrippsWindows, WindowConfig, collate
+from src.data.dataset import TFEAT_DIM, ScrippsWindows, WindowConfig, collate
 from src.data.preprocess import (
     CHANNELS,
     compute_splits,
@@ -76,10 +76,15 @@ def test_window_shapes_and_time_grid(tmp_path: Path):
     assert sample["x_hist"].shape == (24, len(CHANNELS))
     assert sample["x_fcst"].shape == (6, len(CHANNELS))
     assert sample["mask_hist"].dtype == torch.bool
-    # Time grid: hourly steps, contiguous, history precedes forecast.
+    # Tidal clock features: [H, 2K] and [F, 2K], bounded in [-1, 1].
+    assert sample["tfeat_hist"].shape == (24, TFEAT_DIM)
+    assert sample["tfeat_fcst"].shape == (6, TFEAT_DIM)
+    assert sample["tfeat_hist"].abs().max().item() <= 1.0 + 1e-5
+    # Time grid is NORMALIZED by the history span (24h here) so the ODE sees O(1)
+    # t: contiguous unit index-steps → spacing 1/24; forecast starts at 1.0.
     assert sample["t_hist"][0].item() == 0.0
-    assert sample["t_hist"][1].item() - sample["t_hist"][0].item() == pytest.approx(1.0)
-    assert sample["t_fcst"][0].item() == pytest.approx(24.0)
+    assert sample["t_hist"][1].item() - sample["t_hist"][0].item() == pytest.approx(1.0 / 24)
+    assert sample["t_fcst"][0].item() == pytest.approx(1.0)
 
 
 def test_collate_stacks_correctly(tmp_path: Path):
@@ -108,6 +113,9 @@ def test_collate_stacks_correctly(tmp_path: Path):
     assert batch["x_hist"].shape == (3, 24, len(CHANNELS))
     assert batch["mask_fcst"].shape == (3, 6, len(CHANNELS))
     assert batch["t_hist"].shape == (24,)
+    # Tidal features are per-window (absolute-time dependent) → stacked, not shared.
+    assert batch["tfeat_hist"].shape == (3, 24, TFEAT_DIM)
+    assert batch["tfeat_fcst"].shape == (3, 6, TFEAT_DIM)
 
 
 def test_mask_marks_gap_as_invalid(tmp_path: Path):

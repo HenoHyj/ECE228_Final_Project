@@ -4,10 +4,14 @@ model:
   z_dim: 32                # bumped from 16: more capacity for 6 channels
   enc_hidden: 64           # bumped from 32
   ode_hidden: 64
-  ode_method: rk4          # fixed-step; the real divergence fix was tighter grad_clip + warmup
+  dec_hidden: 64           # MLP decoder width (was a single linear layer)
+  ode_method: rk4          # fixed-step; step_size set from the grid so no 48h macro-step
+  ode_substeps: 2          # rk4 substeps per output interval (accuracy)
+  ode_gain: 0.5            # drift init gain (last layer stays small inside ODEFunc)
   rtol: 1.0e-3
   atol: 1.0e-4
   use_adjoint: true
+  use_tidal_features: true  # feed sin/cos tidal clock to the decoder
 
 data:
   interval: hourly
@@ -29,3 +33,4 @@ train:
   seed: 42
   warmup_epochs: 5          # linear LR warmup from lr/10 to lr
   input_dropout_train: 0.3  # random input dropout as data augmentation
+  recon_weight: 0.5         # masked history-reconstruction loss (breaks mean collapse)

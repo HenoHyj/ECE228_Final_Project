@@ -22,6 +22,10 @@ import pandas as pd
 CHANNELS = ("water_level", "air_temp", "water_temp", "air_pressure", "wind_u", "wind_v")
 
 # Default chronological split. Override via CLI in scripts/02_preprocess.py if needed.
+# CAVEAT: val (Sep–Dec) and test (Jan–) are each a single contiguous season, so
+# model selection on val and the test metric both carry a seasonal bias. With
+# only ~2.3 yr of data before val, a chronological hold-out is the honest choice;
+# a rolling-origin / multi-season CV would remove the bias at a large compute cost.
 DEFAULT_SPLIT = {
     "train_start": "2023-01-01",
     "val_start":   "2025-09-01",

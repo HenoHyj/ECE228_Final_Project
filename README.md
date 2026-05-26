@@ -10,21 +10,24 @@ NOAA Station 9410230 (La Jolla, Scripps Pier). Headline experiment:
 ```bash
 pip install -r requirements.txt
 
-# 1. Fetch NOAA data (cached locally; safe to re-run)
-python scripts/01_fetch_data.py --interval hourly --start 2023-01-01
+# 1. Fetch NOAA data (cached locally; safe to re-run). Always 6-min granularity.
+python scripts/01_fetch_data.py --start 2023-01-01
 
-# 2. Build processed parquet + train/val/test splits
-python scripts/02_preprocess.py --interval hourly
+# 2. Build processed parquet (hourly + six_min) + scaler + train/val/test splits
+python scripts/02_preprocess.py
 
-# 3. Train baseline + neural ODE
+# 3. Train baseline + neural ODE (use CUDA_VISIBLE_DEVICES=0 to pin a GPU)
 python scripts/03_train_lstm.py       --config configs/lstm.yaml
 python scripts/04_train_latent_ode.py --config configs/latent_ode.yaml
 
-# 4. Robustness evaluation + figures
-python scripts/05_evaluate.py --interval hourly
+# 4. Robustness evaluation + figures (sweep i.i.d. and contiguous-outage dropout)
+python scripts/05_evaluate.py --interval hourly --dropout-mode iid
+python scripts/05_evaluate.py --interval hourly --dropout-mode block
 ```
 
-Re-run with `--interval six_min` for the high-resolution comparison.
+`scripts/01`/`02` operate on both resolutions at once; pass `--interval six_min`
+to the train/eval scripts for the high-resolution comparison. Ablations without
+the tidal clock features live in `configs/{lstm,latent_ode}_notidal.yaml`.
 
 ## Repository layout
 
@@ -33,7 +36,6 @@ configs/   YAML hyperparameters per model
 data/      raw NOAA JSON cache + processed parquet (gitignored)
 src/       Python package (data, models, training, eval, utils)
 scripts/   numbered entry points
-notebooks/ EDA + final figures
 tests/     pytest sanity checks
 results/   metrics CSVs + figures
 runs/      training checkpoints + logs

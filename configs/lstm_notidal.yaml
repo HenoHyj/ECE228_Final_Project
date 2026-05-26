@@ -1,0 +1,30 @@
+# Ablation: LSTM baseline WITHOUT tidal clock features.
+# Same as lstm.yaml but use_tidal_features: false.
+name: lstm_notidal
+model:
+  type: lstm
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.1
+  use_tidal_features: false
+
+data:
+  interval: hourly
+  history: 48
+  horizon: 24
+  stride: 6
+  batch_size: 128
+  num_workers: 0
+
+train:
+  epochs: 60
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 0.5
+  early_stopping_patience: 8
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  amp: true
+  seed: 42
+  warmup_epochs: 3
+  input_dropout_train: 0.3
