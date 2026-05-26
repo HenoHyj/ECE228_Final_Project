@@ -13,7 +13,13 @@ from torch import nn
 
 
 def linear_interp_impute(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Linearly interpolate missing entries along the time axis, per channel.
+    """Vectorized per-channel linear interpolation along the time axis.
+
+    Missing entries (mask=False) are filled by linear interpolation between the
+    nearest observed neighbours; positions before the first / after the last
+    observation clamp to that endpoint; channels with no observation stay zero.
+    Fully vectorized over (batch, channel) — the old version looped in Python on
+    every forward pass.
 
     Args:
         x:    [B, T, D]  values, with NaN positions zeroed in the dataset
@@ -23,40 +29,29 @@ def linear_interp_impute(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """
     B, T, D = x.shape
     device, dtype = x.device, x.dtype
-    t_idx = torch.arange(T, device=device, dtype=dtype)             # [T]
+    ar = torch.arange(T, device=device, dtype=dtype).view(1, T, 1).expand(B, T, D)
+    sentinel = float(T + 10)
 
-    out = x.clone()
-    for b in range(B):
-        for d in range(D):
-            m = mask[b, :, d]
-            if m.all():
-                continue
-            if not m.any():
-                # No observations at all in this channel → leave as zero.
-                continue
-            obs_t = t_idx[m]                                        # [K]
-            obs_v = x[b, :, d][m]                                   # [K]
-            # torch lacks a built-in 1-D interp; do it manually via searchsorted.
-            interp = _interp1d(t_idx, obs_t, obs_v)                 # [T]
-            out[b, :, d] = interp
-    return out
+    # Index of the last observed step at/before t (−1 if none) via a running max.
+    left_pos = torch.where(mask, ar, torch.full_like(ar, -1.0))
+    left_idx = torch.cummax(left_pos, dim=1).values
+    # Index of the first observed step at/after t (sentinel if none) via reverse running min.
+    right_pos = torch.where(mask, ar, torch.full_like(ar, sentinel))
+    right_idx = torch.flip(torch.cummin(torch.flip(right_pos, [1]), dim=1).values, [1])
 
+    left_valid = left_idx >= 0
+    right_valid = right_idx < sentinel
+    li = left_idx.clamp(min=0).long()
+    ri = right_idx.clamp(max=T - 1).long()
+    x_lo = torch.gather(x, 1, li)
+    x_hi = torch.gather(x, 1, ri)
 
-def _interp1d(query: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:
-    """1-D linear interpolation (numpy.interp semantics, edges clamp to endpoints)."""
-    if xp.numel() == 1:
-        return fp[0].expand_as(query)
-    idx = torch.searchsorted(xp, query)
-    idx_lo = (idx - 1).clamp(0, xp.numel() - 1)
-    idx_hi = idx.clamp(0, xp.numel() - 1)
-    x_lo, x_hi = xp[idx_lo], xp[idx_hi]
-    y_lo, y_hi = fp[idx_lo], fp[idx_hi]
-    denom = (x_hi - x_lo).clamp_min(1e-8)
-    t = ((query - x_lo) / denom).clamp(0.0, 1.0)
-    out = y_lo + t * (y_hi - y_lo)
-    # Outside the observation range, clamp to the nearest endpoint.
-    out = torch.where(query < xp[0], fp[0].expand_as(query), out)
-    out = torch.where(query > xp[-1], fp[-1].expand_as(query), out)
+    denom = (right_idx - left_idx).clamp(min=1.0)
+    frac = (ar - left_idx) / denom
+    out = x_lo + frac * (x_hi - x_lo)
+    out = torch.where(~right_valid, x_lo, out)                      # no obs after → clamp left
+    out = torch.where(~left_valid, x_hi, out)                       # no obs before → clamp right
+    out = torch.where(~left_valid & ~right_valid, torch.zeros_like(out), out)
     return out
 
 
@@ -68,14 +63,20 @@ class LSTMForecaster(nn.Module):
         horizon: int,
         num_layers: int = 2,
         dropout: float = 0.1,
+        use_tidal_features: bool = False,
+        tfeat_dim: int = 0,
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.horizon = horizon
+        self.use_tidal = bool(use_tidal_features)
+        self.tfeat_dim = tfeat_dim if self.use_tidal else 0
 
-        # Input: [imputed_value (D), mask (D)] -> 2D
+        # Input: [imputed_value (D), mask (D), optional tidal clock (2K)].
+        # The tidal features are fed to BOTH models so the comparison isolates
+        # architecture, not who has the clock.
         self.lstm = nn.LSTM(
-            input_size=2 * input_dim,
+            input_size=2 * input_dim + self.tfeat_dim,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             batch_first=True,
@@ -83,9 +84,17 @@ class LSTMForecaster(nn.Module):
         )
         self.head = nn.Linear(hidden_dim, horizon * input_dim)
 
-    def forward(self, x_hist: torch.Tensor, mask_hist: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x_hist: torch.Tensor,
+        mask_hist: torch.Tensor,
+        tfeat_hist: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         x_imp = linear_interp_impute(x_hist, mask_hist)
-        x_aug = torch.cat([x_imp, mask_hist.to(x_imp.dtype)], dim=-1)   # [B, H, 2D]
+        parts = [x_imp, mask_hist.to(x_imp.dtype)]
+        if self.tfeat_dim > 0 and tfeat_hist is not None:
+            parts.append(tfeat_hist.to(x_imp.dtype))
+        x_aug = torch.cat(parts, dim=-1)                                # [B, H, 2D(+2K)]
         out, _ = self.lstm(x_aug)
         last = out[:, -1, :]                                            # [B, hidden]
         flat = self.head(last)                                          # [B, F*D]

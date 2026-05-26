@@ -33,6 +33,7 @@ class TrainCfg:
     amp: bool
     warmup_epochs: int = 0          # linear warmup from lr / 10 -> lr
     input_dropout_train: float = 0.0  # training-time random input dropout
+    recon_weight: float = 0.0       # weight on the history-reconstruction loss (Latent ODE only)
 
 
 PredictFn = Callable[[dict[str, torch.Tensor]], torch.Tensor]
@@ -104,13 +105,23 @@ class Trainer:
 
     def _step(self, batch: dict[str, torch.Tensor], train: bool) -> float | None:
         batch = self._batch_to_device(batch)
+        # Capture the PRE-dropout history so reconstruction targets the truth even
+        # when the input is corrupted — that is exactly the robustness objective.
+        orig_x_hist = batch["x_hist"]
+        orig_mask_hist = batch["mask_hist"]
         if train and self.cfg.input_dropout_train > 0.0:
             batch = _apply_input_dropout(batch, self.cfg.input_dropout_train, self.dropout_gen)
         if train:
             self.optim.zero_grad(set_to_none=True)
         with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
-            pred = self.predict_fn(batch)
+            out = self.predict_fn(batch)
+            if isinstance(out, tuple):
+                pred, recon = out
+            else:
+                pred, recon = out, None
             loss = masked_mse(pred, batch["x_fcst"], batch["mask_fcst"])
+            if train and recon is not None and self.cfg.recon_weight > 0.0:
+                loss = loss + self.cfg.recon_weight * masked_mse(recon, orig_x_hist, orig_mask_hist)
 
         if not torch.isfinite(loss):
             # Drop the batch — params untouched. Common when the ODE solver

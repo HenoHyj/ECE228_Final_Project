@@ -20,6 +20,12 @@ from torch.utils.data import Dataset
 # Hours per step, used to convert step indices to ODE time.
 _STEP_HOURS = {"hourly": 1.0, "six_min": 6.0 / 60.0}
 
+# Dominant tidal constituent periods in hours (M2, S2, K1, O1). Used to build
+# deterministic sin/cos clock features from the ABSOLUTE timestamp so the
+# decoder can render the tide directly. 4 constituents -> 8 features.
+TIDAL_PERIODS_H = (12.4206012, 12.0, 23.93447213, 25.81933871)
+TFEAT_DIM = 2 * len(TIDAL_PERIODS_H)
+
 
 @dataclass
 class WindowConfig:
@@ -27,10 +33,17 @@ class WindowConfig:
     history: int
     horizon: int
     stride: int
+    time_scale: float | None = None   # hours; defaults to history*step_hours
 
     @property
     def step_hours(self) -> float:
         return _STEP_HOURS[self.interval]
+
+    @property
+    def time_scale_hours(self) -> float:
+        # Normalize ODE time to O(1): the old code fed raw t in [0,71], which
+        # swamped the small-init drift net. Default span = history window.
+        return self.time_scale or (self.history * self.step_hours)
 
 
 class ScrippsWindows(Dataset):
@@ -83,6 +96,22 @@ class ScrippsWindows(Dataset):
         self.channels = list(df.columns)
         self.D = len(self.channels)
         self.window_len = config.history + config.horizon
+        self.time_scale = config.time_scale_hours
+
+        # Deterministic tidal/periodic clock features from the ABSOLUTE UTC time
+        # (phase must be globally consistent, so we use wall-clock hours since the
+        # Unix epoch — not window-relative time). Precompute for every timestep.
+        # NOTE: compute hours via Timedelta, NOT `.asi8` — the parquet index is
+        # datetime64[us], so .asi8 is microseconds and a fixed ns divisor would
+        # scale the tidal phase 1000× wrong.
+        _epoch = pd.Timestamp("1970-01-01", tz="UTC")
+        abs_hours = np.asarray((self.timestamps - _epoch) / pd.Timedelta("1h"), dtype=np.float64)
+        feats = []
+        for period in TIDAL_PERIODS_H:
+            ang = 2.0 * np.pi * abs_hours / period
+            feats.append(np.sin(ang))
+            feats.append(np.cos(ang))
+        self.tfeat = np.stack(feats, axis=1).astype(np.float32)        # [T, 2K]
 
         n_windows = max(0, (len(df) - self.window_len) // config.stride + 1)
         start_indices = np.arange(n_windows) * config.stride
@@ -104,22 +133,29 @@ class ScrippsWindows(Dataset):
         h = self.config.history
         f = self.config.horizon
         dt = self.config.step_hours
+        scale = self.time_scale
 
         x_hist = torch.from_numpy(self.values[s : s + h]).float()              # [H, D]
         m_hist = torch.from_numpy(self.mask[s : s + h]).bool()                 # [H, D]
         x_fcst = torch.from_numpy(self.values[s + h : s + h + f]).float()      # [F, D]
         m_fcst = torch.from_numpy(self.mask[s + h : s + h + f]).bool()         # [F, D]
 
-        t_hist = torch.arange(h, dtype=torch.float32) * dt                     # [H]
-        t_fcst = (torch.arange(f, dtype=torch.float32) + h) * dt               # [F]
+        # Normalized ODE time (hours / time_scale) so the integrator sees O(1) t.
+        t_hist = torch.arange(h, dtype=torch.float32) * (dt / scale)           # [H]
+        t_fcst = (torch.arange(f, dtype=torch.float32) + h) * (dt / scale)     # [F]
+
+        tfeat_hist = torch.from_numpy(self.tfeat[s : s + h]).float()           # [H, 2K]
+        tfeat_fcst = torch.from_numpy(self.tfeat[s + h : s + h + f]).float()   # [F, 2K]
 
         return {
             "t_hist": t_hist,
             "x_hist": x_hist,
             "mask_hist": m_hist,
+            "tfeat_hist": tfeat_hist,
             "t_fcst": t_fcst,
             "x_fcst": x_fcst,
             "mask_fcst": m_fcst,
+            "tfeat_fcst": tfeat_fcst,
         }
 
 
@@ -130,11 +166,15 @@ def collate(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     window in a given dataset uses the same relative grid.
     """
     out = {
+        # Time grids are shared (identical relative grid for every fixed-stride window).
         "t_hist": batch[0]["t_hist"],
         "t_fcst": batch[0]["t_fcst"],
         "x_hist":    torch.stack([b["x_hist"]    for b in batch]),
         "mask_hist": torch.stack([b["mask_hist"] for b in batch]),
         "x_fcst":    torch.stack([b["x_fcst"]    for b in batch]),
         "mask_fcst": torch.stack([b["mask_fcst"] for b in batch]),
+        # Tidal features depend on ABSOLUTE time, so they differ per window → stack.
+        "tfeat_hist": torch.stack([b["tfeat_hist"] for b in batch]),
+        "tfeat_fcst": torch.stack([b["tfeat_fcst"] for b in batch]),
     }
     return out
